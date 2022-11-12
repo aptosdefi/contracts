@@ -5,7 +5,7 @@
 2. Go to this directory
 3. Run: aptos init
 Create new account or import existing account
-4. cp Move.toml.example Move.toml
+4. Run: cp Move.toml.example Move.toml
 5. Update Move.toml to match with your local machine (Aptos path) and account
 
 ## Deployment
