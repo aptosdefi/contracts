@@ -1,0 +1,10 @@
+[package]
+name = 'aptos_defi'
+version = '1.0.0'
+[addresses]
+publisher="<your account>"
+aptos_framework = "0x1"
+[dependencies]
+AptosFramework = { local = "aptos-core/aptos-move/framework/aptos-framework" }
+AptosStdlib = { local = "aptos-move/framework/aptos-stdlib" }
+AptosToken = { local = "aptos-move/framework/aptos-token" }
