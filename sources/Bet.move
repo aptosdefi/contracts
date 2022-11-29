@@ -2,8 +2,7 @@ module publisher::adf_bet {
     use std::signer;
     use std::vector;
     use std::coin;
-    // use aptos_framework::account;
-    // use aptos_framework::event;
+    use aptos_framework::timestamp;
 	use aptos_framework::table::{Self, Table};
 
     const MODULE_ADMIN: address = @publisher;
@@ -15,6 +14,9 @@ module publisher::adf_bet {
     const ERROR_ALREADY_CLAIM: u64 = 5;
     const ERROR_NOT_WINNER: u64 = 6;
     const ERROR_INVALID_AMOUNT:u64 = 7;
+    const ERROR_RESULT_NOT_SET:u64 = 8;
+    const ERROR_RESULT_ALREADY_SET:u64 = 9;
+    const ERROR_MATCH_ALREADY_START:u64 = 10;
     const PROVIDER_FEE: u64 = 100;
 	const MAKER_WIN: u8 = 1;
 	const TAKER_WIN: u8 = 2;
@@ -61,16 +63,8 @@ module publisher::adf_bet {
 		let orders = table::new<u64, vector<Order<T>>>();
 		move_to(owner, Gambling<T> {insuranceAddress, orders});
 	}    
-    
 
-	public fun isTokenSupported<T>(): bool {
-       if(exists<Gambling<T>>(MODULE_ADMIN)) {
-            return true
-       };
-       false
-	}
-
-    public fun placeMakerSide<T>(maker: &signer, makerParams: vector<u64>): u64 acquires Gambling {
+    public entry fun placeMakerSide<T>(maker: &signer, makerParams: vector<u64>) acquires Gambling {
 		assert!(vector::length<u64>(&makerParams) == 7, INVALID_INPUT);
         assert!(exists<Gambling<T>>(MODULE_ADMIN), ERROR_MODULE_NOT_INITIALIZE);
 		let gambling = borrow_global_mut<Gambling<T>>(MODULE_ADMIN);
@@ -82,6 +76,7 @@ module publisher::adf_bet {
 		let makerTotalPot = (*vector::borrow(&makerParams, 4) as u64);
 		let betType = (*vector::borrow(&makerParams, 5) as u8);
 		let tokenCode = (*vector::borrow(&makerParams, 6)  as u8);
+        assert!(startTime > timestamp::now_seconds(), ERROR_MATCH_ALREADY_START);
 		assert!(startTime < endTime, 3);
 		assert!(odds > 100, 4);
 
@@ -90,16 +85,11 @@ module publisher::adf_bet {
         };
         let matchInfo = table::borrow_mut(&mut gambling.orders, matchId);
 
-		let orderId = vector::length<Order<T>>(matchInfo);
-
-
         let depositCoin = coin::withdraw<T>(maker, makerTotalPot);
 		let makerDetail = Order<T>{matchId: matchId, odds: odds, startTime: startTime, makerTotalPot: makerTotalPot, betType: betType, tokenCode: tokenCode, status: 99, makerSide: signer::address_of(maker), makerClaimed: false, details: table::new<address, OrderDetail>(), makerPot:0,takerPot:0, updateResultTime:0, winner:0, takers: vector::empty<address>(), treasury: depositCoin};
         vector::push_back<Order<T>>(matchInfo, makerDetail);
-
-		return orderId
 	}
-    public fun placeTakerSide<T>(maker: &signer, matchId: u64, orderId: u64, amount: u64) acquires Gambling {
+    public entry fun placeTakerSide<T>(maker: &signer, matchId: u64, orderId: u64, amount: u64) acquires Gambling {
 		let gambling = borrow_global_mut<Gambling<T>>(MODULE_ADMIN);
         let orders = table::borrow_mut(&mut gambling.orders, matchId);
         let order = vector::borrow_mut<Order<T>>(orders, orderId);
@@ -108,6 +98,7 @@ module publisher::adf_bet {
 
         assert!(amount > 0, ERROR_INVALID_AMOUNT);
         assert!(order.makerPot<=order.makerTotalPot, ERROR_EXCEED_MAKER_POT);
+        assert!(order.startTime > timestamp::now_seconds(), ERROR_MATCH_ALREADY_START);
 
         let depositCoin = coin::withdraw<T>(maker, amount);
         coin::merge(&mut order.treasury, depositCoin);
@@ -121,7 +112,19 @@ module publisher::adf_bet {
         };
         order.takerPot = order.takerPot + amount;
 	}
-    public fun setMatchResult<T>(admin: &signer, matchId: u64, orderId: u64, betType: u8, winner: u8) acquires Gambling {
+    public entry fun setMatchResult<T>(admin: &signer, matchId: u64, orderId: u64, betType: u8, winner: u8) acquires Gambling {
+        let admin_addr = signer::address_of(admin);
+        assert!(admin_addr == MODULE_ADMIN, ERROR_ONLY_ADMIN);
+		let gambling = borrow_global_mut<Gambling<T>>(MODULE_ADMIN);
+        let orders = table::borrow_mut(&mut gambling.orders, matchId);
+
+        let order = vector::borrow_mut<Order<T>>(orders, orderId);
+        if(order.betType == betType) {
+            order.status = 1;
+            order.winner = winner;
+        };
+	}
+    public entry fun setMatchResults<T>(admin: &signer, matchId: u64, winner: u8, betType: u8) acquires Gambling {
         let admin_addr = signer::address_of(admin);
         assert!(admin_addr == MODULE_ADMIN, ERROR_ONLY_ADMIN);
 		let gambling = borrow_global_mut<Gambling<T>>(MODULE_ADMIN);
@@ -129,22 +132,27 @@ module publisher::adf_bet {
 		let orderCount = vector::length<Order<T>>(orders);
         let count = 0;
         while(count < orderCount) {
-            let order = vector::borrow_mut<Order<T>>(orders, orderId);
-            if(order.betType == betType) {
+            let order = vector::borrow_mut<Order<T>>(orders, count);
+            if(order.status == 99  && order.betType == betType) {
+                order.status = 1;
                 order.winner = winner;
+                order.updateResultTime = timestamp::now_seconds();
             };
             count = count + 1;
         }
 	}
-    public fun claim<T>(signer: &signer, matchId: u64, orderId: u64) acquires Gambling {
+    
+    public entry fun claim<T>(signer: &signer, matchId: u64, orderId: u64) acquires Gambling {
         let signerAddress = signer::address_of(signer);
 		let gambling = borrow_global_mut<Gambling<T>>(MODULE_ADMIN);
         let orders = table::borrow_mut(&mut gambling.orders, matchId);
         let order = vector::borrow_mut<Order<T>>(orders, orderId);
+        assert!(order.status == 1, ERROR_RESULT_NOT_SET);
         if(order.winner == MAKER_WIN) {
             assert!(!order.makerClaimed, ERROR_ALREADY_CLAIM);
             assert!(order.makerSide == signerAddress, ERROR_NOT_WINNER);
 
+            order.makerClaimed = true;
             let winAmount = coin::value<T>(&order.treasury);
             let depositCoin = coin::extract<T>(&mut order.treasury, winAmount);
             coin::deposit(signerAddress, depositCoin);
@@ -152,7 +160,7 @@ module publisher::adf_bet {
             assert!(table::contains(&order.details, signerAddress), ERROR_NOT_WINNER);
             let orderDetail = table::borrow_mut(&mut order.details, signerAddress);
             assert!(!orderDetail.claimed, ERROR_ALREADY_CLAIM);
-
+            orderDetail.claimed = true;
             let winAmount = orderDetail.amount * order.odds / 100;
             let depositCoin = coin::extract<T>(&mut order.treasury, winAmount);
             coin::deposit(signerAddress, depositCoin);
@@ -167,11 +175,11 @@ module publisher::adf_bet {
     use publisher::adf_util;
     #[test_only]
     struct TestCoin {}
-    #[test (origin_account = @0xcaffee, acount2 = @0xffffa, nft_receiver = @0x123, nft_receiver2 = @0x234, aptos_framework = @aptos_framework)]
-    public fun test_test(origin_account: signer, acount2: signer)  acquires Gambling{
+    #[test (origin_account = @0xcafe, acount2 = @0xffffa, nft_receiver = @0x123, nft_receiver2 = @0x234, aptos_framework = @aptos_framework)]
+    public fun test_test(origin_account: signer, acount2: signer, aptos_framework: signer)  acquires Gambling{
         create_account_for_test(signer::address_of(&origin_account));
         create_account_for_test(signer::address_of(&acount2));
-
+timestamp::set_time_has_started_for_testing(&aptos_framework);
         managed_coin::initialize<TestCoin>(
                 &origin_account,
                 b"USDT",
@@ -186,25 +194,25 @@ module publisher::adf_bet {
         {
 
                 createGambling<TestCoin>(&origin_account, signer::address_of(&origin_account));
-                let orderId = placeMakerSide<TestCoin>(&origin_account, vector<u64>[1, 120, 100, 200, 1000000, 1, 1]);
+                 placeMakerSide<TestCoin>(&origin_account, vector<u64>[1, 120, 100, 200, 1000000, 1, 1]);
                 assert!(coin::balance<TestCoin>(signer::address_of(&origin_account))== 999999000000, 0);
 
-                placeTakerSide<TestCoin>(&acount2, 1, orderId, 1000000);
+                placeTakerSide<TestCoin>(&acount2, 1, 0, 1000000);
                 assert!(coin::balance<TestCoin>(signer::address_of(&acount2))== 999999000000, 0);
-                setMatchResult<TestCoin>(&origin_account, 1, orderId, 1, MAKER_WIN);
-                claim<TestCoin>(&origin_account, 1, orderId);
+                setMatchResult<TestCoin>(&origin_account, 1, 0, 1, MAKER_WIN);
+                claim<TestCoin>(&origin_account, 1, 0);
                 let balance = coin::balance<TestCoin>(signer::address_of(&origin_account));
                 assert!(coin::balance<TestCoin>(signer::address_of(&origin_account))== 1000001000000, balance);
         };
         {
 
-                let orderId = placeMakerSide<TestCoin>(&origin_account, vector<u64>[1, 120, 100, 200, 1000000, 1, 1]);
+                placeMakerSide<TestCoin>(&origin_account, vector<u64>[1, 120, 100, 200, 1000000, 1, 1]);
                 assert!(coin::balance<TestCoin>(signer::address_of(&origin_account))== 1000000000000, 0);
 
-                placeTakerSide<TestCoin>(&acount2, 1, orderId, 1000000);
+                placeTakerSide<TestCoin>(&acount2, 1, 1, 1000000);
                 assert!(coin::balance<TestCoin>(signer::address_of(&acount2))== 999998000000, 0);
-                setMatchResult<TestCoin>(&origin_account, 1, orderId, 1, TAKER_WIN);
-                claim<TestCoin>(&acount2, 1, orderId);
+                setMatchResult<TestCoin>(&origin_account, 1, 1, 1, TAKER_WIN);
+                claim<TestCoin>(&acount2, 1, 1);
                 let balance = coin::balance<TestCoin>(signer::address_of(&acount2));
                 assert!(coin::balance<TestCoin>(signer::address_of(&acount2))== 999999200000, balance);
         }

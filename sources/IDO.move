@@ -1,5 +1,4 @@
 
-// aptos move run  --function-id 'default::stake::stake' --args address:5203ad03bb063db3053660c40f96b5609f763a70231e67a920b6bbb8fdc2705c u64:100000000
 module publisher::adf_ido {
     use aptos_framework::coin;
     use std::signer;
@@ -81,7 +80,7 @@ module publisher::adf_ido {
 
         let depositCoin = coin::withdraw<Currency>(sender, amount*idoInfo.price/P6);
         coin::deposit(MODULE_ADMIN, depositCoin);
-        table::add(&mut idoInfo.whiteList, signer::address_of(sender), amount);
+        table::upsert(&mut idoInfo.whiteList, signer::address_of(sender), amount);
     }
     public entry fun isJoinedIdo<Currency, CoinType>(sender: &signer):bool acquires IDO_INFO{
         assert!(exists<IDO_INFO<Currency, CoinType>>(MODULE_ADMIN), ERROR_COIN_NOT_INITIALIZED);
@@ -100,7 +99,8 @@ module publisher::adf_ido {
         assert!(table::contains(&mut idoInfo.whiteList, signer::address_of(sender)), ERROR_USER_NOT_WHITELIST);
 
         let balance = table::remove(&mut idoInfo.whiteList, signer::address_of(sender));
-        
+
+        assert!(balance > 0, ERROR_USER_NOT_FOUND);        
         let depositCoin = coin::extract<CoinType>(&mut idoInfo.idoTOken, balance);
         adf_util::check_coin_store<CoinType>(sender);
         coin::deposit(signer::address_of(sender), depositCoin);
@@ -111,7 +111,7 @@ module publisher::adf_ido {
     struct TestCoin {}
     #[test_only]
     use aptos_framework::managed_coin;
-    #[test (origin_account = @0xcaffee, acount2 = @0xcffff, aptos_framework = @aptos_framework)]
+    #[test (origin_account = @0xcafe, acount2 = @0xcffff, aptos_framework = @aptos_framework)]
     public fun test_test(origin_account: signer, acount2 :signer) acquires IDO_INFO {
         create_account_for_test(signer::address_of(&origin_account));
         create_account_for_test(signer::address_of(&acount2));
